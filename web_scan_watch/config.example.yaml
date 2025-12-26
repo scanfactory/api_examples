@@ -1,0 +1,55 @@
+# Example configuration
+#
+# Copy this file to config.yaml and customize for your environment.
+#
+# Required environment variables:
+#   SF_TOKEN    - API authentication token
+#   SF_APP_URL  - API base URL (e.g., https://api.example.com)
+#
+# For multi-instance support, use --env-prefix flag:
+#   RUN1__SF_TOKEN, RUN1__SF_APP_URL for --env-prefix=RUN1__
+#   RUN2__SF_TOKEN, RUN2__SF_APP_URL for --env-prefix=RUN2__
+
+project:
+  # Project name (required)
+  name: "my-web-scan"
+
+  # One-time scan flag
+  # true = each scanner runs once and scan stops when all tasks are completed
+  # false = continuous scanning
+  one_time: true
+
+  # Scan priority (-1 to 3, where 3 - max priority)
+  priority: 0
+
+target: "example.com"
+
+# Headers for target application authorization
+# Each header value is a list of strings
+webauth:
+  Host:
+    - "example.com"
+  Authorization:
+    - "Bearer eyJhbGci..."
+  Cookie:
+    - "session=abc123; csrf_token=xyz789"
+    - "env::ENV_VARIABLE_NAME"
+  # Add any other headers your application requires
+  # Content-Type:
+  #   - "application/json"
+  #   - "env::AUTH_COOKIE"
+
+monitoring:
+  # URL to check if authorization is still valid
+  # Must return HTTP 200 when auth is valid
+  health_check_url: "https://example.com/api/auth/check"
+  heath_check_allowed_http_codes:
+    - 200
+    - 204
+
+  # How often to check authorization (1-60 minutes)
+  check_interval_minutes: 5
+
+  # Maximum scan runtime in hours (max 240 = 10 days)
+  # Scan will stop after this time even if not completed
+  max_runtime_hours: 24
