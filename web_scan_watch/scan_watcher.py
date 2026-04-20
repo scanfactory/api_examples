@@ -41,6 +41,24 @@ class ExitCode(IntEnum):
     API_ERROR = 3
 
 
+class TaskStatus(IntEnum):
+    HIDDEN = 0
+    PAUSED = 10
+    READY = 100
+    PUBLISHED = 110
+    WORKING = 120
+    FINISHED = 130
+    FAILED = 140
+
+
+ACTIVE_TASK_STATUSES = {
+    TaskStatus.READY,
+    TaskStatus.PUBLISHED,
+    TaskStatus.WORKING,
+}
+TERMINAL_TASK_STATUSES = {TaskStatus.FINISHED, TaskStatus.FAILED}
+
+
 logger = logging.getLogger("scan_watcher")
 
 
@@ -61,6 +79,7 @@ class ProjectConfig(BaseModel):
     name: str = Field(..., min_length=1, description="Project name")
     one_time: bool = Field(default=True, description="One-time scan flag")
     priority: int = Field(default=0, ge=-1, le=3, description="Scan priority (-1 to 3)")
+    scan_agent: str = Field(default="", description="Scan agent (qtag)")
 
 
 class MonitoringConfig(BaseModel):
@@ -81,6 +100,21 @@ class MonitoringConfig(BaseModel):
         default=[200],
         description="HTTP status codes considered as successful health check",
     )
+    verify_ssl: bool = Field(
+        default=True,
+        description="Verify TLS certificate of the health check URL",
+    )
+
+
+class ReportConfig(BaseModel):
+    enabled: bool = Field(
+        default=True, description="Download PDF report after scan finishes"
+    )
+    output_path: Path = Field(
+        default=Path("./report.pdf"),
+        description="Path to save the downloaded PDF report",
+    )
+    language: Literal["en", "ru"] = Field(default="en", description="Report language")
 
 
 class ScanConfig(BaseModel):
@@ -90,6 +124,7 @@ class ScanConfig(BaseModel):
         default_factory=dict, description="Headers for target authorization"
     )
     monitoring: MonitoringConfig
+    report: ReportConfig = Field(default_factory=ReportConfig)
 
     @field_validator("webauth", mode="before")
     @classmethod
@@ -388,9 +423,9 @@ class SFAPIClient:
             "name": config.project.name,
             "preset": "web",
             "one_time": config.project.one_time,
-            "qtag": "",
             "scan_settings": {
                 "priority": config.project.priority,
+                "qtag": config.project.scan_agent,
                 "webauth": config.webauth,
                 "time_windows": [],
             },
@@ -417,11 +452,53 @@ class SFAPIClient:
         return self.update_project_status(project_id, "paused")
 
     def get_project(self, project_id: str) -> dict[str, Any]:
-        response = self.client.get(
-            f"{self.base_url}/api/projects/{project_id}?task_stats=1"
-        )
+        url = f"{self.base_url}/api/projects/{project_id}?task_stats=1"
+        logger.debug(f"GET {url}")
+        response = self.client.get(url)
         response.raise_for_status()
         return response.json()
+
+    def list_project_tasks(self, project_id: str) -> list[dict[str, Any]]:
+        """
+        Возвращает все задачи (tasks) проекта (без пагинации).
+        """
+        url = f"{self.base_url}/api/tasks/"
+        params = {"project_id": project_id, "all": "true"}
+        logger.debug(f"GET {url} params={params}")
+        response = self.client.get(url, params=params)
+        response.raise_for_status()
+        return response.json().get("items", [])
+
+    def download_project_report(
+        self,
+        project_id: str,
+        from_timestamp: float,
+        output_path: Path,
+        language: str = "en",
+    ) -> None:
+        """
+        Download PDF report for the project and save it to output_path.
+
+        Args:
+            project_id: Project ID
+            from_timestamp: Unix timestamp for the `from` query parameter
+            output_path: Path where the PDF will be written
+            language: Report language (`en` or `ru`)
+        """
+        url = f"{self.base_url}/api/projects/{project_id}/report"
+        headers = {
+            "Accept": "application/pdf",
+            "Accept-Language": language,
+        }
+        params = {"from": from_timestamp}
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with self.client.stream("GET", url, params=params, headers=headers) as response:
+            response.raise_for_status()
+            with open(output_path, "wb") as f:
+                for chunk in response.iter_bytes():
+                    f.write(chunk)
 
 
 def check_authorization_health(
@@ -429,6 +506,7 @@ def check_authorization_health(
     webauth: dict[str, list[str]],
     allowed_http_codes: list[int],
     timeout: float = 30.0,
+    verify_ssl: bool = True,
 ) -> bool:
     """
     Проверяет, если авторизация в целевом приложении все еще валидна
@@ -437,7 +515,7 @@ def check_authorization_health(
     headers = [(name, value) for name, values in webauth.items() for value in values]
 
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=timeout, verify=verify_ssl) as client:
             response = client.get(health_check_url, headers=headers)
             if response.status_code in allowed_http_codes:
                 logger.debug(f"Health check passed: {health_check_url}")
@@ -464,6 +542,7 @@ class ScanWatcher:
         self.project_id = project_id
         self.start_time = datetime.now(tz=timezone.utc)
         self._shutdown_requested = False
+        self.should_download_report = True
 
     def request_shutdown(self) -> None:
         """Элегантный шатдаун"""
@@ -481,26 +560,40 @@ class ScanWatcher:
             if status == "paused":
                 logger.info(f"Project scan completed with status: {status}")
                 return True
-
-            tasks_total = project.get("tasks_total", 0)
-            tasks_finished = project.get("tasks_finished", 0)
-            all_tasks_finished = project.get("all_tasks_finished", False)
-
-            if (
-                tasks_total is not None
-                and tasks_finished is not None
-                and tasks_total > 0
-                and tasks_finished > 0
-                and tasks_total == tasks_finished
-                and all_tasks_finished is True
-            ):
-                logger.info(f"All tasks completed: {tasks_finished}/{tasks_total}")
-                return True
-
-            return False
         except httpx.HTTPStatusError as e:
-            logger.error(f"Failed to get project status: {e}")
+            logger.error(
+                f"Failed to get project status: "
+                f"{e.response.status_code} on {e.request.url} - {e.response.text}"
+            )
             return False
+
+        try:
+            tasks = self.api_client.list_project_tasks(self.project_id)
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                f"Failed to list project tasks: "
+                f"{e.response.status_code} on {e.request.url} - {e.response.text}"
+            )
+            return False
+
+        total = len(tasks)
+        if total == 0:
+            logger.debug("No tasks returned for project yet")
+            return False
+
+        active = sum(1 for t in tasks if t.get("status") in ACTIVE_TASK_STATUSES)
+        terminal = sum(1 for t in tasks if t.get("status") in TERMINAL_TASK_STATUSES)
+
+        logger.debug(
+            f"Task progress: total={total}, active={active}, "
+            f"finished+failed={terminal}"
+        )
+
+        if active == 0 and terminal > 0:
+            logger.info(f"All tasks completed: {terminal}/{total}")
+            return True
+
+        return False
 
     def run(self) -> ExitCode:
         check_interval_seconds = self.config.monitoring.check_interval_minutes * 60
@@ -508,12 +601,18 @@ class ScanWatcher:
             f"Starting monitoring loop (interval: {self.config.monitoring.check_interval_minutes} min, "
             f"max runtime: {self.config.monitoring.max_runtime_hours} hours)"
         )
+        if not self.config.monitoring.verify_ssl:
+            logger.warning(
+                "TLS certificate verification for health check is DISABLED "
+                "(monitoring.verify_ssl=false)"
+            )
 
         while not self._shutdown_requested:
             if not check_authorization_health(
                 self.config.monitoring.health_check_url,
                 self.config.webauth,
                 self.config.monitoring.health_check_allowed_http_codes,
+                verify_ssl=self.config.monitoring.verify_ssl,
             ):
                 logger.error("Authorization check failed! Stopping scan.")
                 try:
@@ -521,6 +620,7 @@ class ScanWatcher:
                     logger.info("Scan stopped successfully")
                 except httpx.HTTPStatusError as e:
                     logger.error(f"Failed to stop scan: {e}")
+                self.should_download_report = False
                 return ExitCode.AUTH_FAILURE
 
             if self.config.project.one_time and self._check_project_completed():
@@ -659,7 +759,22 @@ class Application:
                 return ExitCode.API_ERROR
 
             self.watcher = ScanWatcher(api_client, config, project_id)
-            return self.watcher.run()
+            exit_code = self.watcher.run()
+
+            if config.report.enabled and self.watcher.should_download_report:
+                logger.info(f"Downloading PDF report to {config.report.output_path}")
+                try:
+                    api_client.download_project_report(
+                        project_id,
+                        self.watcher.start_time.timestamp(),
+                        config.report.output_path,
+                        config.report.language,
+                    )
+                    logger.info(f"Report saved to {config.report.output_path}")
+                except (httpx.HTTPStatusError, httpx.RequestError, OSError) as e:
+                    logger.error(f"Failed to download report: {e}")
+
+            return exit_code
 
         finally:
             api_client.close()

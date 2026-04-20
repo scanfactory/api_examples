@@ -22,6 +22,8 @@ project:
   # Scan priority (-1 to 3, where 3 - max priority)
   priority: 0
 
+  scan_agent: ""
+
 target: "example.com"
 
 # Headers for target application authorization
@@ -43,9 +45,14 @@ monitoring:
   # URL to check if authorization is still valid
   # Must return HTTP 200 when auth is valid
   health_check_url: "https://example.com/api/auth/check"
-  heath_check_allowed_http_codes:
+  health_check_allowed_http_codes:
     - 200
     - 204
+
+  # Verify TLS certificate of the health check URL (default: true).
+  # Set to false only for targets with self-signed or expired certificates
+  # (internal test stands, staging, etc.).
+  verify_ssl: true
 
   # How often to check authorization (1-60 minutes)
   check_interval_minutes: 5
@@ -53,3 +60,15 @@ monitoring:
   # Maximum scan runtime in hours (max 240 = 10 days)
   # Scan will stop after this time even if not completed
   max_runtime_hours: 24
+
+# PDF report downloaded from SF after the scan finishes.
+# Useful for publishing as a GitLab CI/CD artifact.
+report:
+  # Enable/disable report download (default: true)
+  enabled: true
+
+  # Path where the PDF will be saved (default: ./report.pdf)
+  output_path: "./report.pdf"
+
+  # Report language: "en" or "ru" (default: en)
+  language: "en"
