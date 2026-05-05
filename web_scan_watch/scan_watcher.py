@@ -676,6 +676,11 @@ def load_config(config_path: Path, env_prefix: str = "") -> tuple[ScanConfig, st
         raise ValueError(f"Environment variable {env_prefix}SF_TOKEN is required")
     if not sf_app_url:
         raise ValueError(f"Environment variable {env_prefix}SF_APP_URL is required")
+    if not sf_app_url.startswith(("http://", "https://")):
+        raise ValueError(
+            f"Environment variable {env_prefix}SF_APP_URL must start with "
+            f"'http://' or 'https://' (got: {sf_app_url!r})"
+        )
 
     config = ScanConfig(**raw_config)
 
