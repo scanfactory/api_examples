@@ -3,3 +3,19 @@ __pycache__
 *.pyc
 *.pyo
 *.pyd
+
+# coverage.py / pytest artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+
+# design docs / plans
+docs/
+
+# machine-specific helper scripts
+web_scan_watch/restart_vpn.sh
+web_scan_watch/run_with_vpn.sh
+
+
+reports/

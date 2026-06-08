@@ -17,12 +17,30 @@ project:
   # One-time scan flag
   # true = each scanner runs once and scan stops when all tasks are completed
   # false = continuous scanning
+  # При переиспользовании проекта (reuse_existing_project) рекомендуется one_time: false.
   one_time: true
 
   # Scan priority (-1 to 3, where 3 - max priority)
-  priority: 0
+  priority: 3
 
+  # Scan agent identifier (qtag). Empty string = use the default agent.
   scan_agent: ""
+
+  # Requests per second limit for the scan (min 30, max 10000).
+  # Optional: leave it commented out to disable the limit — when unset,
+  # rps is NOT sent to the API and the scanner uses its own default rate.
+  # rps: 1000
+
+
+  # Несовместимо с reuse_existing_project
+  delete_on_completion: false   # удалить проект после успешного скана (только при SUCCESS).
+  # Несовместимо с reuse_existing_project
+  datetime_name_postfix: false  # добавить дату/время (UTC) к имени проекта.
+
+  reuse_existing_project: false # искать проект по имени и переиспользовать.
+  # Если найден — рескан проекта.
+  # если нет — создаётся. На каждом запуске scan_settings/scope re-PATCH.
+  # Несовместимо с delete/postfix. Рекомендуется one_time: false
 
 target: "example.com"
 
@@ -57,18 +75,30 @@ monitoring:
   # How often to check authorization (1-60 minutes)
   check_interval_minutes: 5
 
+  # Retries for the health check on TRANSIENT network/TLS errors (timeouts,
+  # handshake errors). The scan is stopped only after all
+  # retries fail.
+  health_check_retries: 2
+  health_check_retry_delay_seconds: 5
+
   # Maximum scan runtime in hours (max 240 = 10 days)
   # Scan will stop after this time even if not completed
   max_runtime_hours: 24
 
-# PDF report downloaded from SF after the scan finishes.
-# Useful for publishing as a GitLab CI/CD artifact.
+# Reports downloaded from SF after the scan finishes.
+# Useful for publishing as GitLab CI/CD artifacts.
 report:
-  # Enable/disable report download (default: true)
-  enabled: true
-
-  # Path where the PDF will be saved (default: ./report.pdf)
-  output_path: "./report.pdf"
-
-  # Report language: "en" or "ru" (default: en)
-  language: "en"
+  language: "ru"            # язык PDF/HTML отчёта en/ru
+  severity: [10, 8, 5]      # применяется ко всем форматам; допустимо: 2,3,5,8,10
+  pdf:
+    enabled: true
+    output_path: "./report.pdf"
+  html:
+    enabled: false
+    output_path: "./report.html"
+  alerts_json:
+    enabled: false
+    output_path: "./alerts.json"
+  alerts_grouped_json:
+    enabled: false
+    output_path: "./alerts-grouped.json"
