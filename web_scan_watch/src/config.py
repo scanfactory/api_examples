@@ -215,7 +215,7 @@ def load_config(config_path: Path, env_prefix: str = "") -> tuple[ScanConfig, st
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         if config_path.suffix.lower() in (".yaml", ".yml"):
             raw_config = yaml.safe_load(f)
         else:
