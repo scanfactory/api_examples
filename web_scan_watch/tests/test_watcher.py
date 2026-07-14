@@ -384,6 +384,45 @@ def test_health_check_all_retries_fail_stops(monkeypatch):
     assert w.should_download_report is True  # reports still attempted
 
 
+# --- health check disabled (monitoring.enabled=false) ---
+
+
+def _disabled_watcher(client):
+    cfg = ScanConfig(
+        project={"name": "p", "one_time": True},
+        target="example.com",
+        monitoring={"enabled": False},  # no health_check_url required
+    )
+    return watcher.ScanWatcher(client, cfg, "pid")
+
+
+def test_auth_check_passed_true_when_disabled(monkeypatch):
+    # Disabled -> returns True without ever calling check_authorization_health.
+    def boom(*a, **k):
+        raise AssertionError("health check must not run when disabled")
+
+    monkeypatch.setattr(watcher, "check_authorization_health", boom)
+    w = _disabled_watcher(FakeClient())
+    assert w._auth_check_passed() is True
+
+
+def test_run_health_check_disabled_makes_no_requests(monkeypatch):
+    called = {"n": 0}
+
+    def spy(*a, **k):
+        called["n"] += 1
+        return True
+
+    monkeypatch.setattr(watcher, "check_authorization_health", spy)
+    # paused + one_time -> completes on the first iteration
+    client = FakeClient(project_status="paused")
+    w = _disabled_watcher(client)
+    rc = w.run()
+    assert rc == ExitCode.SUCCESS
+    assert called["n"] == 0  # health check never invoked
+    assert client.stopped is True
+
+
 def test_health_check_shutdown_during_retries_is_graceful(monkeypatch):
     monkeypatch.setattr(watcher, "check_authorization_health", lambda *a, **k: False)
     client = FakeClient()

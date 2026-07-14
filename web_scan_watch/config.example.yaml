@@ -60,6 +60,12 @@ webauth:
   #   - "env::AUTH_COOKIE"
 
 monitoring:
+  # Enable the target authorization health check.
+  # true  = periodically verify the target authorization is still valid (default)
+  # false = skip the check entirely (no requests are made); health_check_url
+  #         is not required in that case.
+  enabled: true
+
   # URL to check if authorization is still valid
   # Must return HTTP 200 when auth is valid
   health_check_url: "https://example.com/api/auth/check"

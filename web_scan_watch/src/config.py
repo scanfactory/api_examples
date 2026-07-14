@@ -76,7 +76,18 @@ class ProjectConfig(BaseModel):
 
 
 class MonitoringConfig(BaseModel):
-    health_check_url: str = Field(..., description="URL for health check")
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable the target authorization health check. When false, the "
+            "check is skipped entirely (no requests are made) and "
+            "health_check_url is not required."
+        ),
+    )
+    health_check_url: str = Field(
+        default="",
+        description="URL for health check (required unless enabled=false)",
+    )
     check_interval_minutes: int = Field(
         default=DEFAULT_CHECK_INTERVAL_MINUTES,
         ge=MIN_CHECK_INTERVAL_MINUTES,
@@ -112,6 +123,15 @@ class MonitoringConfig(BaseModel):
         le=300,
         description="Delay between health-check retries (seconds)",
     )
+
+    @model_validator(mode="after")
+    def _validate_health_check_url(self) -> "MonitoringConfig":
+        if self.enabled and not self.health_check_url:
+            raise ValueError(
+                "monitoring.health_check_url is required when "
+                "monitoring.enabled is true"
+            )
+        return self
 
 
 class ReportFormatConfig(BaseModel):

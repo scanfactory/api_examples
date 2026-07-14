@@ -56,7 +56,13 @@ class ScanWatcher:
         handshake timeout from a flapping VPN) on every failed attempt. We retry
         up to `health_check_retries` times so a transient network blip does not
         kill the whole scan; only a persistent failure is treated as auth loss.
+
+        When `monitoring.enabled` is false the check is skipped entirely (no
+        request is made) and auth is always considered valid.
         """
+        if not self.config.monitoring.enabled:
+            return True
+
         attempts = self.config.monitoring.health_check_retries + 1
         delay = self.config.monitoring.health_check_retry_delay_seconds
         for i in range(1, attempts + 1):
@@ -197,7 +203,12 @@ class ScanWatcher:
             f"Starting monitoring loop (interval: {self.config.monitoring.check_interval_minutes} min, "
             f"max runtime: {self.config.monitoring.max_runtime_hours} hours)"
         )
-        if not self.config.monitoring.verify_ssl:
+        if not self.config.monitoring.enabled:
+            logger.info(
+                "Target authorization health check is DISABLED "
+                "(monitoring.enabled=false)"
+            )
+        elif not self.config.monitoring.verify_ssl:
             logger.warning(
                 "TLS certificate verification for health check is DISABLED "
                 "(monitoring.verify_ssl=false)"

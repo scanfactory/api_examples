@@ -193,6 +193,25 @@ def test_load_config_success_json(tmp_path: Path, monkeypatch):
     assert token == "tok-json"
 
 
+def test_monitoring_enabled_defaults_true():
+    assert config.ScanConfig(**_base_raw()).monitoring.enabled is True
+
+
+def test_monitoring_disabled_allows_missing_url():
+    raw = _base_raw()
+    raw["monitoring"] = {"enabled": False}  # no health_check_url
+    cfg = config.ScanConfig(**raw)
+    assert cfg.monitoring.enabled is False
+    assert cfg.monitoring.health_check_url == ""
+
+
+def test_monitoring_enabled_requires_url():
+    raw = _base_raw()
+    raw["monitoring"] = {}  # enabled defaults True, but no health_check_url
+    with pytest.raises(ValidationError):
+        config.ScanConfig(**raw)
+
+
 def test_load_config_missing_url(tmp_path: Path, monkeypatch):
     cfg = tmp_path / "c.yaml"
     cfg.write_text(textwrap.dedent("""
