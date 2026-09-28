@@ -36,6 +36,7 @@ Exit codes:
   1 - Authorization failure
   2 - Configuration error
   3 - API error
+  4 - No new tasks in monitoring.no_tasks_timeout_minutes
 
 Environment variables:
   {PREFIX}SF_TOKEN   - API authentication token (required)

@@ -580,3 +580,88 @@ def test_run_downloads_reports_on_auth_failure(tmp_path, monkeypatch):
     rc = application.run(cfg, "", force=True)
     assert rc == ExitCode.AUTH_FAILURE  # exit code unchanged
     assert called.get("yes") is True  # reports still attempted on auth failure
+
+
+# --- reuse mode: 409 on create means the token cannot see the project ---
+
+import logging
+
+import httpx
+import pytest
+
+from src.api_client import ProjectNotVisibleError
+
+
+def _status_error(status_code):
+    request = httpx.Request("POST", "https://x/api/projects/")
+    response = httpx.Response(status_code, request=request, text="{}")
+    return httpx.HTTPStatusError("err", request=request, response=response)
+
+
+class CreateFailsApi(FakeApi):
+    def __init__(self, status_code):
+        super().__init__(existing=None)
+        self.status_code = status_code
+
+    def create_project(self, config):
+        raise _status_error(self.status_code)
+
+
+def test_resolve_reuse_conflict_raises_project_not_visible():
+    application = app_module.Application()
+    with pytest.raises(ProjectNotVisibleError, match="proj"):
+        application._resolve_project(
+            CreateFailsApi(409),
+            _cfg(reuse_existing_project=True),
+            datetime.now(timezone.utc),
+        )
+
+
+def test_resolve_reuse_conflict_message_names_both_causes():
+    # 409 also occurs when a parallel run creates the project after the lookup.
+    application = app_module.Application()
+    with pytest.raises(ProjectNotVisibleError) as error_info:
+        application._resolve_project(
+            CreateFailsApi(409),
+            _cfg(reuse_existing_project=True),
+            datetime.now(timezone.utc),
+        )
+    message = str(error_info.value)
+    assert "no access" in message
+    assert "parallel run" in message
+
+
+def test_resolve_reuse_other_create_error_is_not_rewritten():
+    application = app_module.Application()
+    with pytest.raises(httpx.HTTPStatusError):
+        application._resolve_project(
+            CreateFailsApi(500),
+            _cfg(reuse_existing_project=True),
+            datetime.now(timezone.utc),
+        )
+
+
+def test_run_project_not_visible_returns_config_error(tmp_path, monkeypatch, caplog):
+    cfg = _write_cfg(tmp_path)
+    monkeypatch.setenv("SF_TOKEN", "tok")
+    monkeypatch.setenv("SF_APP_URL", "https://api.example.com")
+    monkeypatch.setattr(app_module, "validate_tokens", lambda *a, **k: True)
+    monkeypatch.setattr(
+        app_module, "SFAPIClient", lambda url, token: FakeClientForRun()
+    )
+    application = app_module.Application()
+
+    def resolve_project_hidden_from_token(*args, **kwargs):
+        raise ProjectNotVisibleError("token cannot see the project")
+
+    monkeypatch.setattr(
+        application, "_resolve_project", resolve_project_hidden_from_token
+    )
+    with caplog.at_level(logging.ERROR):
+        rc = application.run(cfg, "", force=True)
+
+    assert rc == ExitCode.CONFIG_ERROR
+    assert any(
+        "token cannot see the project" in record.getMessage()
+        for record in caplog.records
+    )

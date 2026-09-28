@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 import yaml
 
-from src.api_client import SFAPIClient
+from src.api_client import ProjectNotVisibleError, SFAPIClient
 from src.config import ExitCode, load_config
 from src.tokens import validate_tokens
 from src.watcher import ScanWatcher
@@ -53,7 +53,22 @@ class Application:
                 logger.info("Reusing existing project: %s", project_id)
                 return project_id, True
             logger.info("Project %r not found; creating it", proj.name)
-            project = api_client.create_project(config)
+            try:
+                project = api_client.create_project(config)
+            except httpx.HTTPStatusError as error:
+                # GET /api/projects/ lists only the projects in the token scope,
+                # but POST checks the name against all projects.
+                if error.response.status_code == httpx.codes.CONFLICT:
+                    raise ProjectNotVisibleError(
+                        f"The API did not create project {proj.name!r} (409 "
+                        "Conflict). A project with this name exists. Possible "
+                        "causes: (1) The API token has no access to this "
+                        "project. Give the token access to this project, or use "
+                        "a token that has access to all projects. (2) A parallel "
+                        "run created this project after this run searched for "
+                        "it. Run the script again."
+                    ) from error
+                raise
             project_id = project.get("id") or project.get("_id")
             logger.info("Project created (will be reused next run): %s", project_id)
             return project_id, False
@@ -107,6 +122,9 @@ class Application:
                 )
             except AmbiguousProjectError as e:
                 logger.error("Ambiguous project name: %s", e)
+                return ExitCode.CONFIG_ERROR
+            except ProjectNotVisibleError as e:
+                logger.error("Cannot reuse the project: %s", e)
                 return ExitCode.CONFIG_ERROR
             except httpx.HTTPStatusError as e:
                 logger.error(

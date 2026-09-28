@@ -97,6 +97,7 @@ monitoring:
 
   check_interval_minutes: 5      # Интервал проверки (1-60)
   max_runtime_hours: 24          # Максимальное время работы (до 240)
+  no_tasks_timeout_minutes: 0    # Ранний выход, если задачи не появились (0 - выключено)
 
 report:
   language: "ru"                 # Язык PDF/HTML: "en" или "ru"
@@ -144,6 +145,10 @@ report:
   (ротируемые webauth-токены, `priority`, `rps` всегда актуальны);
 - если найдено **более одного** проекта с таким именем — скрипт завершается с
   ошибкой `CONFIG_ERROR`;
+- если поиск не нашёл проект, а API отвечает 409 на создание, скрипт
+  завершается с ошибкой `CONFIG_ERROR`. Возможные причины: у токена нет доступа
+  к проекту с таким именем (выдайте доступ) или параллельный запуск создал
+  проект после поиска (запустите скрипт ещё раз);
 - **рекомендуется** `one_time: false` (см. [«Мониторинг при переиспользовании»](#мониторинг-при-переиспользовании-rescan) ниже).
 
 **`delete_on_completion: true`** — удаляет проект (`DELETE /api/projects/{id}`)
@@ -162,13 +167,15 @@ report:
 
 - при старте запоминается базовое число задач проекта;
 - пока **новые** задачи (от `rescan`) не появились — на каждом цикле пишется
-  `WARNING` «новые задачи не были созданы», и скан **не** останавливается
-  (мониторинг идёт до `max_runtime_hours`);
+  `WARNING` "новые задачи не были созданы", и скан **не** останавливается
+  (мониторинг идёт до `no_tasks_timeout_minutes` или `max_runtime_hours`);
 - как только число задач выросло — предупреждение прекращается;
 - когда новые задачи **все завершились** — скан завершается штатно (проект
   останавливается, скачиваются отчёты);
-- если новые задачи так и не появились — скан не останавливается раньше времени и
-  доходит до `max_runtime_hours`.
+- если новые задачи так и не появились, скан по умолчанию
+  (`no_tasks_timeout_minutes: 0`) идёт до `max_runtime_hours`. Если
+  `no_tasks_timeout_minutes` больше 0, скрипт останавливает скан через это число
+  минут с кодом 4 (`NO_TASKS`) и не скачивает отчёты.
 
 Поэтому при переиспользовании **рекомендуется `one_time: false`**.
 
@@ -246,6 +253,7 @@ webauth:
 | `health_check_retries`             | int       | `2`          | Повторов health check при транзиентных сетевых/TLS ошибках |
 | `health_check_retry_delay_seconds` | float     | `5`          | Задержка между повторами health check (секунды)            |
 | `max_runtime_hours`                | float     | `24`         | Максимальное время работы (до 240 часов = 10 дней)         |
+| `no_tasks_timeout_minutes`         | int       | `0`          | Ранний выход с кодом 4, если задачи не появились. 0 - выключено |
 
 #### Health Check URL
 
@@ -324,11 +332,14 @@ report:
 | ------------------------------------------------ | ------------ |
 | Успешное завершение скана (все задачи выполнены) | ✔            |
 | Превышение `max_runtime_hours`                   | ✔            |
+| Задачи не появились за `no_tasks_timeout_minutes` | нет          |
 | Получение `SIGINT` / `SIGTERM`                   | ✔ (попытка)  |
 | Потеря авторизации в целевом приложении          | ✔ (попытка)  |
 
-Отчёты скачиваются (best-effort) во всех случаях остановки, **включая потерю
-авторизации** — чтобы не терять уже найденные результаты. Отчёт тянется из SF API
+Отчёты скачиваются (best-effort) при любой остановке, **включая потерю
+авторизации**, чтобы не терять уже найденные результаты. Исключение: `NO_TASKS`.
+Без задач отчёт пустой и выглядит как чистый скан, поэтому скрипт его не
+скачивает. Отчёт тянется из SF API
 (не из цели), поэтому потеря доступа к цели ему не мешает. При ошибке скачивания
 (сетевой сбой, недоступность API) скрипт логирует ошибку, но не меняет итоговый exit
 code — поведение скана приоритетнее (при потере авторизации он остаётся `AUTH_FAILURE`).
@@ -395,6 +406,7 @@ Exit codes:
   1 - Authorization failure
   2 - Configuration error
   3 - API error
+  4 - No new tasks in monitoring.no_tasks_timeout_minutes
 
 Environment variables:
   {PREFIX}SF_TOKEN   - API authentication token (required)
@@ -412,7 +424,7 @@ Example:
 
 ```bash
 export SF_TOKEN="eyJhbGci..."
-export SF_APP_URL="https://sf.company.com"
+export SF_APP_URL="https://sf.example.com"
 
 python scan_watcher.py config.yaml
 ```
@@ -422,13 +434,13 @@ python scan_watcher.py config.yaml
 ```bash
 # Терминал 1
 export RUN1__SF_TOKEN="token1"
-export RUN1__SF_APP_URL="https://sf.company.com"
+export RUN1__SF_APP_URL="https://sf.example.com"
 export RUN1__AUTH_TOKEN="Bearer abc..."
 python scan_watcher.py config1.yaml --env-prefix=RUN1__
 
 # Терминал 2
 export RUN2__SF_TOKEN="token2"
-export RUN2__SF_APP_URL="https://sf.company.com"
+export RUN2__SF_APP_URL="https://sf.example.com"
 export RUN2__AUTH_TOKEN="Bearer xyz..."
 python scan_watcher.py config2.yaml --env-prefix=RUN2__
 ```
@@ -468,6 +480,7 @@ web_scan:
 | 1   | `AUTH_FAILURE` | Авторизация стала невалидной                         |
 | 2   | `CONFIG_ERROR` | Ошибка конфигурации или валидации токенов            |
 | 3   | `API_ERROR`    | Ошибка при работе с API                              |
+| 4   | `NO_TASKS`     | Задачи не появились за `no_tasks_timeout_minutes`    |
 
 ## Валидация JWT-токенов
 
@@ -536,7 +549,7 @@ Continue anyway? [y/N]:
 - **Режим переиспользования** (`reuse_existing_project: true`): завершение
   проверяется **независимо от `one_time`** и по-особому — скан ждёт **новые**
   задачи от `rescan` и завершается, только когда они все выполнены; пока новых
-  задач нет — мониторит до `max_runtime_hours`
+  задач нет, мониторит до `no_tasks_timeout_minutes` или `max_runtime_hours`
   (подробно — [«Мониторинг при переиспользовании»](#мониторинг-при-переиспользовании-rescan)).
 
 В любом режиме скан также останавливается при превышении `max_runtime_hours`,

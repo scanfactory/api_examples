@@ -91,6 +91,11 @@ monitoring:
   # Scan will stop after this time even if not completed
   max_runtime_hours: 24
 
+  # Stop the scan with exit code 4 (NO_TASKS) when no new tasks appear
+  # in this number of minutes. 0 disables this check (default).
+  # Example: 60 stops the scan when no tasks appear in 1 hour.
+  no_tasks_timeout_minutes: 0
+
 # Reports downloaded from SF after the scan finishes.
 # Useful for publishing as GitLab CI/CD artifacts.
 report:

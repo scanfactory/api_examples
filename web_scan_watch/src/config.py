@@ -18,9 +18,11 @@ class ExitCode(IntEnum):
     AUTH_FAILURE = 1
     CONFIG_ERROR = 2
     API_ERROR = 3
+    NO_TASKS = 4
 
 
 DEFAULT_CHECK_INTERVAL_MINUTES = 5
+DEFAULT_NO_TASKS_TIMEOUT_MINUTES = 0
 MIN_CHECK_INTERVAL_MINUTES = 1
 MAX_CHECK_INTERVAL_MINUTES = 60
 MAX_RUNTIME_DAYS = 10
@@ -99,6 +101,16 @@ class MonitoringConfig(BaseModel):
         gt=0,
         le=MAX_RUNTIME_HOURS,
         description="Maximum runtime in hours",
+    )
+    no_tasks_timeout_minutes: int = Field(
+        default=DEFAULT_NO_TASKS_TIMEOUT_MINUTES,
+        ge=0,
+        le=MAX_RUNTIME_HOURS * 60,
+        description=(
+            "If no new tasks appear in this number of minutes, the script "
+            "stops the scan with exit code NO_TASKS (4). The value 0 disables "
+            "this check."
+        ),
     )
     health_check_allowed_http_codes: list[int] = Field(
         default=[200],

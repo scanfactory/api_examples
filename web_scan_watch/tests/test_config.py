@@ -223,3 +223,14 @@ def test_load_config_missing_url(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("SF_APP_URL", raising=False)
     with pytest.raises(ValueError):
         config.load_config(cfg, "")
+
+
+def test_no_tasks_timeout_default_and_bounds():
+    raw = _base_raw()
+    # Disabled by default: old configs keep running until max_runtime_hours.
+    assert config.ScanConfig(**raw).monitoring.no_tasks_timeout_minutes == 0
+    raw["monitoring"]["no_tasks_timeout_minutes"] = 60
+    assert config.ScanConfig(**raw).monitoring.no_tasks_timeout_minutes == 60
+    raw["monitoring"]["no_tasks_timeout_minutes"] = -1
+    with pytest.raises(ValidationError):
+        config.ScanConfig(**raw)

@@ -316,6 +316,7 @@ def test_run_reuse_keeps_monitoring_until_runtime_when_no_new_tasks(monkeypatch)
     client = FakeClient(tasks=[{"status": 130}])  # count stays == baseline
     w = make_reuse_watcher(client, one_time=False)
     w.config.monitoring.max_runtime_hours = 1.0
+    w.config.monitoring.no_tasks_timeout_minutes = 0  # early exit disabled
     w.start_time = datetime.now(tz=timezone.utc) - timedelta(
         hours=2
     )  # already exceeded
@@ -435,3 +436,119 @@ def test_health_check_shutdown_during_retries_is_graceful(monkeypatch):
     monkeypatch.setattr(watcher.time, "sleep", fake_sleep)
     rc = w.run()
     assert rc == ExitCode.SUCCESS  # graceful shutdown, NOT AUTH_FAILURE
+
+
+# --- early exit when no tasks appear (monitoring.no_tasks_timeout_minutes) ---
+
+import pytest
+
+
+def make_watcher_waiting_for_tasks(
+    client, timeout_minutes, minutes_since_start, one_time=True, reuse=False
+):
+    project = {"name": "p", "one_time": one_time}
+    if reuse:
+        project["reuse_existing_project"] = True
+    cfg = ScanConfig(
+        project=project,
+        target="example.com",
+        monitoring={
+            "health_check_url": "https://x/health",
+            "no_tasks_timeout_minutes": timeout_minutes,
+        },
+    )
+    scan_watcher = watcher.ScanWatcher(client, cfg, "pid")
+    scan_watcher.start_time = datetime.now(tz=timezone.utc) - timedelta(
+        minutes=minutes_since_start
+    )
+    return scan_watcher
+
+
+def stop_after_first_cycle(monkeypatch, scan_watcher):
+    monkeypatch.setattr(
+        watcher.time, "sleep", lambda *a, **k: scan_watcher.request_shutdown()
+    )
+
+
+@pytest.mark.parametrize("one_time", [True, False], ids=["one_time", "continuous"])
+def test_run_stops_with_no_tasks_when_none_appear_in_time(monkeypatch, one_time):
+    monkeypatch.setattr(watcher, "check_authorization_health", lambda *a, **k: True)
+    client = FakeClient(tasks=[])
+    scan_watcher = make_watcher_waiting_for_tasks(
+        client, timeout_minutes=60, minutes_since_start=61, one_time=one_time
+    )
+    stop_after_first_cycle(monkeypatch, scan_watcher)
+
+    rc = scan_watcher.run()
+
+    assert rc == ExitCode.NO_TASKS
+    assert client.stopped is True
+    assert scan_watcher.should_download_report is False
+
+
+def test_run_reuse_stops_with_no_tasks_when_rescan_adds_none(monkeypatch):
+    monkeypatch.setattr(watcher, "check_authorization_health", lambda *a, **k: True)
+    client = FakeClient(tasks=[{"status": 130}])  # count stays == baseline
+    scan_watcher = make_watcher_waiting_for_tasks(
+        client, timeout_minutes=60, minutes_since_start=61, reuse=True
+    )
+    stop_after_first_cycle(monkeypatch, scan_watcher)
+
+    rc = scan_watcher.run()
+
+    assert rc == ExitCode.NO_TASKS
+    assert client.stopped is True
+
+
+def test_run_ignores_missing_tasks_when_timeout_is_disabled(monkeypatch):
+    monkeypatch.setattr(watcher, "check_authorization_health", lambda *a, **k: True)
+    client = FakeClient(tasks=[])
+    scan_watcher = make_watcher_waiting_for_tasks(
+        client, timeout_minutes=0, minutes_since_start=120
+    )
+    scan_watcher.config.monitoring.max_runtime_hours = 1.0
+
+    rc = scan_watcher.run()
+
+    assert rc == ExitCode.SUCCESS  # stopped by max_runtime, not by no-tasks check
+
+
+def test_no_tasks_timeout_not_reached_keeps_waiting():
+    scan_watcher = make_watcher_waiting_for_tasks(
+        FakeClient(tasks=[]), timeout_minutes=60, minutes_since_start=30
+    )
+    assert scan_watcher._no_tasks_timeout_exceeded() is False
+
+
+def test_no_tasks_timeout_passes_once_tasks_exist():
+    scan_watcher = make_watcher_waiting_for_tasks(
+        FakeClient(tasks=[{"status": 110}]), timeout_minutes=60, minutes_since_start=61
+    )
+    assert scan_watcher._no_tasks_timeout_exceeded() is False
+    assert scan_watcher._new_tasks_seen is True
+
+
+def test_no_tasks_timeout_does_not_fire_on_api_error():
+    scan_watcher = make_watcher_waiting_for_tasks(
+        ErrorClient(fail_tasks=True), timeout_minutes=60, minutes_since_start=61
+    )
+    assert scan_watcher._no_tasks_timeout_exceeded() is False
+
+
+def test_run_no_tasks_stop_error_logged(monkeypatch, caplog):
+    # no tasks in time and stop_project raises -> logged, still NO_TASKS
+    monkeypatch.setattr(watcher, "check_authorization_health", lambda *a, **k: True)
+    client = StopAlwaysFails(tasks=[])
+    scan_watcher = make_watcher_waiting_for_tasks(
+        client, timeout_minutes=60, minutes_since_start=61
+    )
+    stop_after_first_cycle(monkeypatch, scan_watcher)
+
+    with caplog.at_level("ERROR", logger="scan_watcher"):
+        rc = scan_watcher.run()
+
+    assert rc == ExitCode.NO_TASKS
+    assert scan_watcher.should_download_report is False
+    assert any(
+        "Failed to stop scan" in record.getMessage() for record in caplog.records
+    )

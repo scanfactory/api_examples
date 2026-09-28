@@ -44,6 +44,25 @@ class ScanWatcher:
         max_runtime_seconds = self.config.monitoring.max_runtime_hours * 3600
         return elapsed.total_seconds() > max_runtime_seconds
 
+    def _no_tasks_timeout_exceeded(self) -> bool:
+        timeout_minutes = self.config.monitoring.no_tasks_timeout_minutes
+        if timeout_minutes == 0 or self._new_tasks_seen:
+            return False
+        elapsed = datetime.now(tz=timezone.utc) - self.start_time
+        if elapsed.total_seconds() <= timeout_minutes * 60:
+            return False
+        try:
+            tasks = self.api_client.list_project_tasks(self.project_id)
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                f"Failed to list project tasks: "
+                f"{e.response.status_code} on {e.request.url} - {e.response.text}"
+            )
+            return False
+        if len(tasks) > self._baseline_task_count:
+            self._new_tasks_seen = True
+        return not self._new_tasks_seen
+
     def _interruptible_sleep(self, seconds: float) -> None:
         end = time.time() + seconds
         while time.time() < end and not self._shutdown_requested:
@@ -175,9 +194,10 @@ class ScanWatcher:
                 )
             else:
                 logger.warning(
-                    "New tasks have NOT been created since the new scan started "
-                    "(tasks=%d, baseline=%d) — continuing to monitor until "
-                    "max_runtime",
+                    "New tasks have NOT been created since the rescan started "
+                    "(tasks=%d, baseline=%d). The script continues to monitor "
+                    "until the no_tasks_timeout_minutes or max_runtime_hours "
+                    "limit.",
                     total,
                     self._baseline_task_count,
                 )
@@ -222,9 +242,10 @@ class ScanWatcher:
             except httpx.HTTPStatusError:
                 self._baseline_task_count = 0
             logger.info(
-                "Reuse mode: baseline task count = %d. The scan finishes only "
-                "after the rescan creates new tasks AND they all complete; "
-                "otherwise it monitors until max_runtime.",
+                "Reuse mode: baseline task count = %d. The scan is complete "
+                "only when the rescan creates new tasks and all new tasks are "
+                "complete. If not, the script monitors until the "
+                "no_tasks_timeout_minutes or max_runtime_hours limit.",
                 self._baseline_task_count,
             )
 
@@ -253,6 +274,22 @@ class ScanWatcher:
                 except httpx.HTTPStatusError as e:
                     logger.error(f"Failed to stop project: {e}")
                 return ExitCode.SUCCESS
+
+            if self._no_tasks_timeout_exceeded():
+                logger.error(
+                    "No new tasks after %d minutes "
+                    "(monitoring.no_tasks_timeout_minutes). The script stops the "
+                    "scan. Make sure that the scan agent is online. Make sure "
+                    "that the agent can resolve the target.",
+                    self.config.monitoring.no_tasks_timeout_minutes,
+                )
+                # Without tasks the report is empty and reads as a clean scan.
+                self.should_download_report = False
+                try:
+                    self.api_client.stop_project(self.project_id)
+                except httpx.HTTPStatusError as e:
+                    logger.error(f"Failed to stop scan: {e}")
+                return ExitCode.NO_TASKS
 
             if self._check_runtime_exceeded():
                 logger.info("Maximum runtime exceeded. Stopping scan.")

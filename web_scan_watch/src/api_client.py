@@ -17,6 +17,14 @@ class AmbiguousProjectError(Exception):
     """More than one project matched a name lookup."""
 
 
+class ProjectNotVisibleError(Exception):
+    """The name lookup found no project, but the API rejected the create (409).
+
+    Possible causes: the API token has no access to the project, or a parallel
+    run created the project after the lookup.
+    """
+
+
 FIXED_SCOPE_SETTINGS = {
     "exclude_private_ips": True,
     "ip_whitelist": [],
