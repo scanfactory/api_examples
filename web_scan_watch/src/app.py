@@ -92,7 +92,11 @@ class Application:
             logger.error(f"Configuration error: {e}")
             return ExitCode.CONFIG_ERROR
 
-        logger.info(f"Configuration loaded: project={config.project.name}")
+        logger.info(
+            "Configuration loaded: project=%s, targets=%s",
+            config.project.name,
+            config.targets,
+        )
 
         logger.info("Validating tokens...")
         if not validate_tokens(

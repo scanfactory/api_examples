@@ -155,7 +155,8 @@ def _write_cfg(tmp_path):
     return cfg
 
 
-def test_run_happy_path_returns_success(tmp_path, monkeypatch):
+def test_run_happy_path_returns_success(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="scan_watcher")
     cfg = _write_cfg(tmp_path)
     monkeypatch.setenv("SF_TOKEN", "tok")
     monkeypatch.setenv("SF_APP_URL", "https://api.example.com")
@@ -180,6 +181,7 @@ def test_run_happy_path_returns_success(tmp_path, monkeypatch):
     assert fake_client.created == ["proj"]
     assert fake_client.started == ["x"]
     assert fake_client.closed is True
+    assert "Configuration loaded: project=proj, targets=['example.com']" in caplog.text
 
 
 import httpx
@@ -665,3 +667,23 @@ def test_run_project_not_visible_returns_config_error(tmp_path, monkeypatch, cap
         "token cannot see the project" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_run_config_error_on_target_and_targets(tmp_path, monkeypatch):
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(textwrap.dedent("""
+        project: {name: proj}
+        target: a.example.com
+        targets: [b.example.com]
+        monitoring: {health_check_url: "https://x/health"}
+    """))
+    monkeypatch.setenv("SF_TOKEN", "tok")
+    monkeypatch.setenv("SF_APP_URL", "https://api.example.com")
+
+    def fail_if_api_is_called(*args, **kwargs):
+        raise AssertionError("the API client must not start on a config error")
+
+    monkeypatch.setattr(app_module, "SFAPIClient", fail_if_api_is_called)
+    monkeypatch.setattr(app_module, "validate_tokens", lambda *args, **kwargs: True)
+    exit_code = app_module.Application().run(config_path, "", force=True)
+    assert exit_code == ExitCode.CONFIG_ERROR

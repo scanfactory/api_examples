@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 logger = logging.getLogger("scan_watcher")
 
@@ -185,13 +185,62 @@ class ReportConfig(BaseModel):
 
 
 class ScanConfig(BaseModel):
+    # Error text must not repeat the raw config: webauth can hold secrets.
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     project: ProjectConfig
-    target: str = Field(..., min_length=1, description="Target domain or IP to scan")
+    targets: list[str] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Targets to scan: domains, wildcard domains, IPv4 addresses "
+            "or CIDR networks"
+        ),
+    )
     webauth: dict[str, list[str]] = Field(
         default_factory=dict, description="Headers for target authorization"
     )
     monitoring: MonitoringConfig
     report: ReportConfig = Field(default_factory=ReportConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _map_legacy_target(cls, raw_config: Any) -> Any:
+        # Legacy configs set one target as `target: "example.com"`.
+        if not isinstance(raw_config, dict) or "target" not in raw_config:
+            return raw_config
+        if "targets" in raw_config:
+            raise ValueError(
+                "The config has both 'target' and 'targets'. Use only 'targets'."
+            )
+        if not isinstance(raw_config["target"], str):
+            raise ValueError(
+                "'target' must be one string. Use 'targets' for a list of targets."
+            )
+        mapped_config = {
+            key: value for key, value in raw_config.items() if key != "target"
+        }
+        mapped_config["targets"] = [raw_config["target"]]
+        return mapped_config
+
+    @field_validator("targets")
+    @classmethod
+    def _normalize_targets(cls, targets: list[str]) -> list[str]:
+        normalized_targets: list[str] = []
+        # Domain names ignore letter case. Keep the first spelling.
+        seen_target_keys: set[str] = set()
+        for target_index, target_value in enumerate(targets):
+            stripped_target = target_value.strip()
+            if not stripped_target:
+                raise ValueError(
+                    f"targets[{target_index}] is empty. "
+                    "Set a domain, an IP address or a CIDR network."
+                )
+            target_key = stripped_target.lower()
+            if target_key not in seen_target_keys:
+                seen_target_keys.add(target_key)
+                normalized_targets.append(stripped_target)
+        return normalized_targets
 
     @field_validator("webauth", mode="before")
     @classmethod
@@ -241,6 +290,20 @@ def resolve_webauth_env_values(
     return result
 
 
+def warn_if_host_header_shared(config: ScanConfig) -> None:
+    """Warn when several targets get one webauth Host header."""
+    if len(config.targets) < 2:
+        return
+    if not any(header_name.lower() == "host" for header_name in config.webauth):
+        return
+    logger.warning(
+        "The scanners send the webauth header 'Host' to all %d targets: %s. "
+        "If the targets are different hosts, remove 'Host' from webauth.",
+        len(config.targets),
+        config.targets,
+    )
+
+
 def load_config(config_path: Path, env_prefix: str = "") -> tuple[ScanConfig, str, str]:
     """Загрузает конфиг из файла и окружения"""
 
@@ -270,5 +333,6 @@ def load_config(config_path: Path, env_prefix: str = "") -> tuple[ScanConfig, st
 
     # Resolve env::
     config.webauth = resolve_webauth_env_values(config.webauth, env_prefix)
+    warn_if_host_header_shared(config)
 
     return config, sf_token, sf_app_url

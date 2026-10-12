@@ -1,3 +1,4 @@
+import logging
 import os
 import textwrap
 from pathlib import Path
@@ -234,3 +235,126 @@ def test_no_tasks_timeout_default_and_bounds():
     raw["monitoring"]["no_tasks_timeout_minutes"] = -1
     with pytest.raises(ValidationError):
         config.ScanConfig(**raw)
+
+
+def _targets_raw(targets):
+    raw = _base_raw()
+    del raw["target"]
+    raw["targets"] = targets
+    return raw
+
+
+def test_legacy_target_maps_to_targets():
+    assert config.ScanConfig(**_base_raw()).targets == ["example.com"]
+
+
+def test_targets_list_keeps_order():
+    raw = _targets_raw(["b.example.com", "10.0.0.5", "a.example.com"])
+    assert config.ScanConfig(**raw).targets == [
+        "b.example.com",
+        "10.0.0.5",
+        "a.example.com",
+    ]
+
+
+def test_target_and_targets_together_rejected():
+    raw = _base_raw()
+    raw["targets"] = ["a.example.com"]
+    with pytest.raises(ValidationError, match="both 'target' and 'targets'"):
+        config.ScanConfig(**raw)
+
+
+def test_missing_target_and_targets_rejected():
+    raw = _base_raw()
+    del raw["target"]
+    with pytest.raises(ValidationError):
+        config.ScanConfig(**raw)
+
+
+def test_legacy_target_mapping_does_not_mutate_input():
+    raw = _base_raw()
+    config.ScanConfig.model_validate(raw)
+    assert raw["target"] == "example.com"
+    assert "targets" not in raw
+
+
+def test_targets_empty_list_rejected():
+    with pytest.raises(ValidationError):
+        config.ScanConfig(**_targets_raw([]))
+
+
+@pytest.mark.parametrize("blank_target", ["", "   "])
+def test_targets_blank_item_rejected(blank_target):
+    raw = _targets_raw(["a.example.com", blank_target])
+    with pytest.raises(ValidationError, match=r"targets\[1\] is empty"):
+        config.ScanConfig(**raw)
+
+
+def test_legacy_blank_target_rejected():
+    raw = _base_raw()
+    raw["target"] = "  "
+    with pytest.raises(ValidationError, match=r"targets\[0\] is empty"):
+        config.ScanConfig(**raw)
+
+
+def test_targets_items_stripped_and_deduplicated():
+    raw = _targets_raw([" a.example.com ", "10.0.0.5", "a.example.com", "10.0.0.5"])
+    assert config.ScanConfig(**raw).targets == ["a.example.com", "10.0.0.5"]
+
+
+@pytest.mark.parametrize(
+    ("targets", "webauth", "expect_warning"),
+    [
+        (["a.example.com", "b.example.com"], {"Host": ["a.example.com"]}, True),
+        (["a.example.com", "b.example.com"], {"host": ["a.example.com"]}, True),
+        (["a.example.com"], {"Host": ["a.example.com"]}, False),
+        (["a.example.com", "b.example.com"], {"Cookie": ["session=1"]}, False),
+    ],
+)
+def test_warn_if_host_header_shared(caplog, targets, webauth, expect_warning):
+    raw = _targets_raw(targets)
+    raw["webauth"] = webauth
+    with caplog.at_level(logging.WARNING, logger="scan_watcher"):
+        config.warn_if_host_header_shared(config.ScanConfig(**raw))
+    assert ("webauth header 'Host'" in caplog.text) is expect_warning
+
+
+def test_load_config_warns_on_shared_host_header(tmp_path: Path, monkeypatch, caplog):
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(textwrap.dedent("""
+        project: {name: p}
+        targets: [a.example.com, b.example.com]
+        webauth: {Host: a.example.com}
+        monitoring: {health_check_url: "https://x/health"}
+    """))
+    monkeypatch.setenv("SF_TOKEN", "tok")
+    monkeypatch.setenv("SF_APP_URL", "https://api.example.com")
+    with caplog.at_level(logging.WARNING, logger="scan_watcher"):
+        config.load_config(config_path, "")
+    assert "webauth header 'Host'" in caplog.text
+
+
+@pytest.mark.parametrize("config_problem", ["both_target_keys", "no_target_key"])
+def test_config_error_hides_webauth_secret(config_problem):
+    raw = {"project": {"name": "p"}, "monitoring": {"enabled": False}}
+    if config_problem == "both_target_keys":
+        raw["target"] = "a.example.com"
+        raw["targets"] = ["b.example.com"]
+    # webauth is the last key: the tail of the input repr holds its value.
+    raw["webauth"] = {"Cookie": ["session=FAKESECRET0123456789abcdef"]}
+    with pytest.raises(ValidationError) as error_info:
+        config.ScanConfig(**raw)
+    assert "0123456789abcdef" not in str(error_info.value)
+
+
+@pytest.mark.parametrize("legacy_value", [["a.example.com", "b.example.com"], None, 42])
+def test_legacy_target_must_be_one_string(legacy_value):
+    raw = _base_raw()
+    raw["target"] = legacy_value
+    with pytest.raises(ValidationError, match="'target' must be one string"):
+        config.ScanConfig(**raw)
+
+
+def test_targets_deduplicated_case_insensitively():
+    raw = _targets_raw(["Example.com", "10.0.0.5", "example.com", "EXAMPLE.COM"])
+    assert config.ScanConfig(**raw).targets == ["Example.com", "10.0.0.5"]

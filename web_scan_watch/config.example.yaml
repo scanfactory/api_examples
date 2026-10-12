@@ -42,10 +42,21 @@ project:
   # если нет — создаётся. На каждом запуске scan_settings/scope re-PATCH.
   # Несовместимо с delete/postfix. Рекомендуется one_time: false
 
-target: "example.com"
+# Scan targets (required). One project scans all targets in the list.
+# Allowed values:
+#   - domain:          "example.com"
+#   - wildcard domain: "*.example.com"
+#   - IPv4 address:    "192.168.1.10"
+#   - CIDR network:    "192.168.1.0/28"
+# The legacy key `target: "example.com"` (one string) still works.
+# Do not set `target` and `targets` together.
+targets:
+  - "example.com"
 
 # Headers for target application authorization
 # Each header value is a list of strings
+# All targets get the same headers. If you set several targets and they are
+# different hosts, remove the Host header.
 webauth:
   Host:
     - "example.com"

@@ -305,3 +305,32 @@ def test_rescan_project_raises_on_error():
     client = make_client(lambda r: httpx.Response(500, text="boom"))
     with pytest.raises(httpx.HTTPStatusError):
         client.rescan_project("abc")
+
+
+def _targets_config(targets):
+    return ScanConfig(
+        project={"name": "proj"},
+        targets=targets,
+        monitoring={"health_check_url": "https://x/health"},
+    )
+
+
+def test_build_scope_settings_splits_domains_and_ips():
+    client = make_client(lambda r: httpx.Response(200, json={}))
+    payload = client._build_project_payload(
+        _targets_config(["a.example.com", "10.0.0.5", "b.example.com"])
+    )
+    scope = payload["scope_settings"]
+    assert scope["root_domains"] == ["a.example.com", "b.example.com"]
+    assert scope["root_ips"] == ["10.0.0.5"]
+    assert payload["preset"] == "web"
+
+
+def test_build_scope_settings_cidr_goes_to_root_ips():
+    client = make_client(lambda r: httpx.Response(200, json={}))
+    payload = client._build_project_payload(
+        _targets_config(["example.com", "*.example.org", "10.0.1.0/28", "10.0.0.5"])
+    )
+    scope = payload["scope_settings"]
+    assert scope["root_domains"] == ["example.com", "*.example.org"]
+    assert scope["root_ips"] == ["10.0.1.0/28", "10.0.0.5"]

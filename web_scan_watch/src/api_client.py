@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 from enum import IntEnum
@@ -86,20 +87,27 @@ class SFAPIClient:
         self.client.close()
 
     @staticmethod
-    def _is_ip_address(target: str) -> bool:
-        import ipaddress
-
+    def _is_ip_target(target_value: str) -> bool:
+        # A single address or a CIDR network. The API checks the exact format.
         try:
-            ipaddress.ip_address(target)
+            ipaddress.ip_network(target_value, strict=False)
             return True
         except ValueError:
             return False
 
     @staticmethod
-    def _build_scope_settings(target: str) -> dict[str, list[str]]:
-        if SFAPIClient._is_ip_address(target):
-            return {"root_domains": [], "root_ips": [target]}
-        return {"root_domains": [target], "root_ips": []}
+    def _build_scope_settings(targets: list[str]) -> dict[str, list[str]]:
+        root_ips = [
+            target_value
+            for target_value in targets
+            if SFAPIClient._is_ip_target(target_value)
+        ]
+        root_domains = [
+            target_value
+            for target_value in targets
+            if not SFAPIClient._is_ip_target(target_value)
+        ]
+        return {"root_domains": root_domains, "root_ips": root_ips}
 
     def create_project(self, config: ScanConfig) -> dict[str, Any]:
         """
@@ -148,7 +156,7 @@ class SFAPIClient:
             "one_time": config.project.one_time,
             "scan_settings": scan_settings,
             "scope_settings": {
-                **self._build_scope_settings(config.target),
+                **self._build_scope_settings(config.targets),
                 **FIXED_SCOPE_SETTINGS,
             },
         }
